@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# AWS Lambda
+*.zip
+
+# Local development output
+output/
+sample_emails/
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Distribution / packaging - exclude vendored dependencies in root
+boto3/
+boto3-*/
+botocore/
+botocore-*/
+bs4/
+beautifulsoup4-*/
+certifi/
+certifi-*/
+charset_normalizer/
+charset_normalizer-*/
+dateutil/
+python_dateutil-*/
+idna/
+idna-*/
+jmespath/
+jmespath-*/
+requests/
+requests-*/
+s3transfer/
+s3transfer-*/
+six-*/
+soupsieve/
+soupsieve-*/
+urllib3/
+urllib3-*/
+bin/
+six.py
