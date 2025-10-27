@@ -36,7 +36,7 @@ logger.setLevel(logging.INFO)
 register_namespace('itunes', "http://www.itunes.com/dtds/podcast-1.0.dtd")
 
 class ClaudeNewsletterProcessor:
-    def __init__(self, test_mode: bool = False):
+    def __init__(self, test_mode: bool = False, create_rss: bool = True):
         self.sqs_client = boto3.client('sqs')
         self.sns_client = boto3.client('sns')
         self.polly_client = boto3.client('polly')
@@ -63,6 +63,7 @@ class ClaudeNewsletterProcessor:
         self.polly_voice = os.environ.get('POLLY_VOICE', 'Joanna')
         self.polly_rate = os.environ.get('POLLY_RATE', 'medium')
         self.generate_audio = os.environ.get('GENERATE_AUDIO', 'true').lower() == 'true'
+        self.update_rss_feed = os.environ.get('UPDATE_RSS_FEED', 'true').lower() == 'true'
         
         # RSS Feed configuration
         self.feed_key = 'feed.xml'
@@ -73,8 +74,13 @@ class ClaudeNewsletterProcessor:
         if self.test_mode:
             logger.info("⚠️  Processor initialized in TEST MODE - messages will not be deleted")
         
+        # RSS creation configuration (can be set via parameter or environment)
+        self.create_rss = create_rss and os.environ.get('UPDATE_RSS_FEED', 'true').lower() == 'true'
+        if not self.create_rss:
+            logger.info("⚠️  RSS feed creation DISABLED")
+        
         # Claude API configuration
-        self.claude_model = "claude-sonnet-4-20250514"  # You can change to claude-3-opus-20240229 for better quality
+        self.claude_model = "claude-sonnet-4-5-20250929"  # You can change to claude-3-opus-20240229 for better quality
         self.claude_api_url = "https://api.anthropic.com/v1/messages"
         
         # Token counting for Claude (with fallback)
@@ -1094,7 +1100,7 @@ Content: {email['content']}
                 self.claude_api_url,
                 headers=headers,
                 json=data,
-                timeout=60
+                timeout=360
             )
             
             if response.status_code == 429:
@@ -1370,10 +1376,14 @@ Content: {email['content']}
             date_str = datetime.fromisoformat(processed_date.replace('Z', '+00:00')).strftime('%Y-%m-%d')
             audio_key, presigned_url = self._upload_audio_to_s3(audio_data, date_str)
             
-            # Update RSS feed
-            episode_date = datetime.fromisoformat(processed_date.replace('Z', '+00:00'))
-            episode_description = self._create_episode_description(podcast_content)
-            self._update_rss_feed(audio_key, len(audio_data), episode_description, episode_date)
+            # Update RSS feed only if enabled
+            if self.create_rss:
+                episode_date = datetime.fromisoformat(processed_date.replace('Z', '+00:00'))
+                episode_description = self._create_episode_description(podcast_content)
+                self._update_rss_feed(audio_key, len(audio_data), episode_description, episode_date)
+                logger.info("RSS feed updated with new episode")
+            else:
+                logger.info("RSS feed update skipped (create_rss=false)")
             
             return {
                 'audio_key': audio_key,
@@ -1731,14 +1741,20 @@ def lambda_handler(event, context):
     test_mode_from_env = os.environ.get('TEST_MODE', 'false').lower() == 'true'
     test_mode = test_mode_from_event or test_mode_from_env
     
+    # Check RSS creation setting from event
+    create_rss_from_event = str(event.get('create_rss', 'true')).lower() == 'true'
+    
     if test_mode:
         if test_mode_from_event:
             logger.info("⚠️  RUNNING IN TEST MODE (from event JSON) - Messages will NOT be deleted from queue")
         else:
             logger.info("⚠️  RUNNING IN TEST MODE (from environment) - Messages will NOT be deleted from queue")
     
+    if not create_rss_from_event:
+        logger.info("⚠️  RSS CREATION DISABLED (from event JSON)")
+    
     try:
-        processor = ClaudeNewsletterProcessor(test_mode=test_mode)
+        processor = ClaudeNewsletterProcessor(test_mode=test_mode, create_rss=create_rss_from_event)
         result_message = processor.process_newsletter_queue()
         
         logger.info(f"Processing completed: {result_message['status']}")
@@ -1765,7 +1781,7 @@ def lambda_handler(event, context):
         try:
             if result_message:
                 # Create a new processor instance for sending email (test mode doesn't matter for email sending)
-                email_processor = ClaudeNewsletterProcessor()
+                email_processor = ClaudeNewsletterProcessor(create_rss=create_rss_from_event)
                 email_processor.send_summary_email(result_message)
         except Exception as e:
             logger.error(f"Failed to send summary email: {str(e)}")
@@ -1797,6 +1813,7 @@ PODCAST_S3_BUCKET=ai-newsletter-podcasts
 POLLY_VOICE=Joanna
 POLLY_RATE=medium
 GENERATE_AUDIO=true
+UPDATE_RSS_FEED=true
 
 # RSS Feed variables:
 PODCAST_IMAGE_URL=https://ai-newsletter-podcasts.s3.amazonaws.com/podcast.jpg
