@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AWS Lambda function that processes AI newsletters into dual-format outputs: executive summaries and podcast scripts with audio. Operates in two modes: daily newsletter processing and weekly strategic analysis.
+AWS Lambda function (`ai-newsletter-podcast-creator`) that processes AI newsletters into dual-format outputs: executive summaries and podcast scripts with audio. Runs daily on a scheduled trigger.
 
 ## Core Architecture
 
-### Three Main Processors
+### Main Components
 
 1. **`ClaudeNewsletterProcessor`** (lambda_function.py:38-1722)
    - Daily newsletter processing from SQS queue
@@ -16,15 +16,9 @@ AWS Lambda function that processes AI newsletters into dual-format outputs: exec
    - Podcast audio generation via AWS Polly with intro/outro
    - RSS feed management for podcast distribution
    - DynamoDB storage for daily summaries
+   - Invoked via `lambda_handler()`
 
-2. **`WeeklyAnalysisProcessor`** (weekly_analysis.py:33-837)
-   - Saturday weekly strategic analysis
-   - Retrieves 7 days of summaries from DynamoDB
-   - Generates meta-analysis of weekly AI trends
-   - Produces separate weekly podcast with strategic focus
-   - Invoked via `lambda_handler_weekly()`
-
-3. **`LocalNewsletterProcessor`** (local_processor.py:16-344)
+2. **`LocalNewsletterProcessor`** (local_processor.py:16-344)
    - Local development version for testing
    - Reads sample emails from JSON files
    - Saves all outputs locally (MP3, XML, reports)
@@ -127,15 +121,15 @@ Local mode outputs to `output/` directory:
 
 ### Lambda Deployment
 
-The codebase is packaged as `ai-newsletter-lambda.zip` with all dependencies vendored in. Two Lambda handlers:
-- `lambda_handler` - Daily processing (triggered by schedule or SQS)
-- `lambda_handler_weekly` - Weekly analysis (triggered Saturdays)
+The codebase is packaged as `ai-newsletter-lambda.zip` with all dependencies vendored in.
+- Lambda handler: `lambda_handler` - Daily processing (triggered by EventBridge schedule)
+- Function name: `ai-newsletter-podcast-creator`
 
 ### Test Mode
 
 Set `TEST_MODE=true` or pass `{"test": true}` in event JSON to prevent SQS message deletion. Useful for testing without consuming queue messages.
 
-Weekly analysis can be forced on non-Saturdays with `{"force_weekly": true}` in event.
+RSS feed creation can be disabled with `{"create_rss": false}` in event JSON.
 
 ## Environment Variables
 
@@ -185,10 +179,9 @@ Smart batching uses 70% of max_tokens_per_batch as safety margin (_create_smart_
 All prompts centralized in _init_prompts (lambda_function.py:96-236) with separate templates for:
 - Executive comprehensive/batch/meta-summary
 - Podcast comprehensive/batch/meta-summary
-- Weekly analysis and weekly podcast
 
 ### RSS Feed Management
-RSS feeds support both daily and weekly episodes. Weekly episodes use longer duration estimates (15 min vs 10 min) and different titles/GUIDs to distinguish episode types.
+RSS feed is updated with each podcast episode. Episodes include episode title, description, audio URL, publication date, and duration (default: 10 minutes).
 
 ### Cleanup Behavior
 Messages only deleted from SQS when test_mode=False (lambda_function.py:304-307). This prevents data loss during development/debugging.

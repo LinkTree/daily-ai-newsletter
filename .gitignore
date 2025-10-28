@@ -76,3 +76,14 @@ urllib3/
 urllib3-*/
 bin/
 six.py
+
+# Unused/old files (not managed by this project)
+weekly_analysis.py
+reference.py
+fixed_method.py
+ssml_fix.py
+
+# Deployment artifacts
+deployment-package.zip
+deployment-*.log
+lambda-update-*.log
