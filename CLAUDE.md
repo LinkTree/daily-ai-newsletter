@@ -131,6 +131,29 @@ Set `TEST_MODE=true` or pass `{"test": true}` in event JSON to prevent SQS messa
 
 RSS feed creation can be disabled with `{"create_rss": false}` in event JSON.
 
+### Lambda Testing Protocol
+
+**CRITICAL: When user requests to run Lambda "once" or "one time only":**
+
+1. **Before invoking:** Check for any running executions
+   ```bash
+   aws logs tail /aws/lambda/FUNCTION_NAME --region REGION --since 2m --format short | tail -10
+   ```
+
+2. **Verify no active invocations:** Look for recent "START RequestId" without corresponding "END RequestId"
+
+3. **Run EXACTLY ONE invocation:** Use a single `aws lambda invoke` command
+
+4. **Wait for completion:** Monitor logs to confirm the single execution completes
+
+5. **Never run multiple invocations** when user explicitly requests "once" - this wastes money, API credits, and violates user intent
+
+**Why this matters:**
+- Each Lambda invocation costs money (compute + API calls)
+- Claude API calls have rate limits and usage costs
+- TEST_MODE with SQS means messages are reprocessed repeatedly
+- User trust depends on following explicit instructions precisely
+
 ## Environment Variables
 
 ### Required

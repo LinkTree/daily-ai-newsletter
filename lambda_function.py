@@ -50,7 +50,14 @@ class ClaudeNewsletterProcessor:
         self.max_messages = int(os.environ.get('MAX_MESSAGES', '50'))
         self.max_links_per_email = int(os.environ.get('MAX_LINKS_PER_EMAIL', '5'))
         self.dynamodb_table_name = os.environ.get('DYNAMODB_TABLE_NAME', 'ai_daily_news')
-        
+
+        # Environment detection for staging
+        self.environment = os.environ.get('ENVIRONMENT', 'production')
+        self.s3_key_prefix = os.environ.get('S3_KEY_PREFIX', '')
+        self.notification_prefix = os.environ.get('NOTIFICATION_PREFIX', '')
+        self.podcast_title = os.environ.get('PODCAST_TITLE', 'Daily AI, by AI')
+        self.podcast_title_short = os.environ.get('PODCAST_TITLE_SHORT', 'Daily AI')
+
         # Claude API rate limiting - NEW CONFIGURATION
         self.claude_requests_per_minute = int(os.environ.get('CLAUDE_RPM_LIMIT', '5'))
         self.claude_max_retries = int(os.environ.get('CLAUDE_MAX_RETRIES', '6'))
@@ -66,7 +73,7 @@ class ClaudeNewsletterProcessor:
         self.update_rss_feed = os.environ.get('UPDATE_RSS_FEED', 'true').lower() == 'true'
         
         # RSS Feed configuration
-        self.feed_key = 'feed.xml'
+        self.feed_key = os.environ.get('RSS_FEED_NAME', 'feed.xml')
         self.podcast_image_url = os.environ.get('PODCAST_IMAGE_URL', f'https://{self.s3_bucket}.s3.amazonaws.com/podcast.png')
         
         # Test mode configuration (can be set via parameter or environment)
@@ -316,9 +323,6 @@ Write as engaging podcast content for technology executives. Do NOT include any 
                 'status': '✅ Success',
                 'total_emails': len(enhanced_emails),
                 'processing_strategy': summary['strategy_used'],
-                'summary': summary['content'],
-                'key_insights': summary['insights'],
-                'top_links': summary.get('top_links', []),
                 'podcast_content': summary.get('podcast_content', ''),
                 'podcast_headlines': summary.get('podcast_headlines', []),
                 'podcast_deep_dive': summary.get('podcast_deep_dive', ''),
@@ -383,24 +387,30 @@ Write as engaging podcast content for technology executives. Do NOT include any 
             attempt += 1
             try:
                 logger.info(f"Attempt {attempt}: Polling SQS queue...")
-                
+
+                # Use shorter visibility timeout for test mode so messages become visible again quickly
+                visibility_timeout = 30 if self.test_mode else None
+
+                # Build receive_message parameters
+                receive_params = {
+                    'QueueUrl': self.queue_url,
+                    'MaxNumberOfMessages': 10,
+                    'WaitTimeSeconds': 2
+                }
+                if visibility_timeout:
+                    receive_params['VisibilityTimeout'] = visibility_timeout
+                    logger.info(f"Using VisibilityTimeout={visibility_timeout}s for test mode")
+
                 # Try simpler receive call first
-                response = self.sqs_client.receive_message(
-                    QueueUrl=self.queue_url,
-                    MaxNumberOfMessages=10,
-                    WaitTimeSeconds=2
-                )
-                
+                response = self.sqs_client.receive_message(**receive_params)
+
                 # If that doesn't work, try with all attributes
                 if not response.get('Messages') and attempt == 1:
                     logger.info("Trying with message attributes...")
-                    response = self.sqs_client.receive_message(
-                        QueueUrl=self.queue_url,
-                        MaxNumberOfMessages=10,
-                        WaitTimeSeconds=5,
-                        MessageAttributeNames=['All'],
-                        AttributeNames=['All']
-                    )
+                    receive_params['WaitTimeSeconds'] = 5
+                    receive_params['MessageAttributeNames'] = ['All']
+                    receive_params['AttributeNames'] = ['All']
+                    response = self.sqs_client.receive_message(**receive_params)
                 
                 logger.info(f"SQS response keys: {list(response.keys())}")
                 
@@ -679,43 +689,35 @@ Write as engaging podcast content for technology executives. Do NOT include any 
             return None
     
     def _hybrid_processing(self, emails: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Apply hybrid processing strategy based on content size"""
+        """Apply hybrid processing strategy based on content size - PODCAST ONLY"""
         try:
             # Estimate total token count
             total_content = self._prepare_content_for_estimation(emails)
             estimated_tokens = self._estimate_tokens(total_content)
-            
+
             logger.info(f"Estimated tokens: {estimated_tokens}, Max allowed: {self.max_tokens_per_batch}")
-            
+
             if estimated_tokens <= self.max_tokens_per_batch:
-                # Strategy 1: Single context processing - generate both formats
-                executive_summary = self._single_context_processing(emails)
+                # Strategy 1: Single context processing - podcast only
                 podcast_content = self._single_context_podcast_processing(emails)
-                
+
                 return {
-                    'strategy_used': 'Single Context Processing (Dual Format)',
-                    'content': executive_summary['content'],
-                    'insights': executive_summary['insights'], 
-                    'top_links': executive_summary.get('top_links', []),
+                    'strategy_used': 'Single Context Processing (Podcast Only)',
                     'podcast_content': podcast_content['content'],
                     'podcast_headlines': podcast_content.get('headlines', []),
                     'podcast_deep_dive': podcast_content.get('deep_dive', '')
                 }
             else:
-                # Strategy 2: Batch processing with meta-summary - generate both formats
-                executive_summary = self._batch_processing(emails)
+                # Strategy 2: Batch processing with meta-summary - podcast only
                 podcast_content = self._batch_podcast_processing(emails)
-                
+
                 return {
-                    'strategy_used': f'Batch Processing (Dual Format, {len(self._create_smart_batches(emails))} batches)',
-                    'content': executive_summary['content'],
-                    'insights': executive_summary['insights'],
-                    'top_links': executive_summary.get('top_links', []),
+                    'strategy_used': f'Batch Processing (Podcast Only, {len(self._create_smart_batches(emails))} batches)',
                     'podcast_content': podcast_content['content'],
                     'podcast_headlines': podcast_content.get('headlines', []),
                     'podcast_deep_dive': podcast_content.get('deep_dive', '')
                 }
-                
+
         except Exception as e:
             logger.error(f"Error in hybrid processing: {str(e)}")
             raise
@@ -1317,7 +1319,7 @@ Content: {email['content']}
         """Upload audio to S3 and return key and presigned URL"""
         try:
             # Create filename with date
-            audio_key = f"podcasts/ai-newsletter-{date_str}.mp3"
+            audio_key = f"{self.s3_key_prefix}podcasts/ai-newsletter-{date_str}.mp3"
             
             # Upload to S3
             self.s3_client.put_object(
@@ -1428,8 +1430,9 @@ Content: {email['content']}
             host_name = f"{voice_name}, a synthetic intelligence agent"
         
         # Create podcast introduction and outro (clean text)
-        intro = f"Welcome to Daily AI, by AI. I'm {host_name}, bringing you today's most important developments in artificial intelligence. Today is {day_name}, {date_formatted}."
-        outro = f"That's all for today's Daily AI, by AI. I'm {host_name}, and I'll be back tomorrow with more AI insights. Until then, keep innovating."
+        env_notice = "This is a staging test. " if self.environment == 'staging' else ""
+        intro = f"{env_notice}Welcome to {self.podcast_title}. I'm {host_name}, bringing you today's most important developments in artificial intelligence. Today is {day_name}, {date_formatted}."
+        outro = f"That's all for today's {self.podcast_title}. I'm {host_name}, and I'll be back tomorrow with more AI insights. Until then, keep innovating."
         
         # STEP 1: Remove existing SSML tags (they'll be re-added properly)
         text = re.sub(r'<break[^>]*/?>', ' ', text)
@@ -1502,12 +1505,13 @@ Content: {email['content']}
             description = '. '.join(description_sentences[:3])
             if len(description) > 200:
                 description = description[:197] + "..."
-                
-            return description or "Daily AI newsletter summary with the latest developments in artificial intelligence."
-            
+
+            default_desc = f"{self.podcast_title} newsletter summary with the latest developments in artificial intelligence."
+            return description or default_desc
+
         except Exception as e:
             logger.warning(f"Error creating episode description: {str(e)}")
-            return "Daily AI newsletter summary with the latest developments in artificial intelligence."
+            return f"{self.podcast_title} newsletter summary with the latest developments in artificial intelligence."
     
     def _update_rss_feed(self, audio_key: str, audio_size: int, episode_description: str, episode_date: datetime) -> None:
         """Update RSS feed with new podcast episode (based on reference.py)"""
@@ -1523,12 +1527,12 @@ Content: {email['content']}
                 logger.info("Creating new RSS feed...")
                 rss = Element("rss", version="2.0", attrib={"xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"})
                 channel = SubElement(rss, "channel")
-                
+
                 # Add channel metadata
-                SubElement(channel, "title").text = "Daily AI, by AI"
+                SubElement(channel, "title").text = self.podcast_title
                 SubElement(channel, "link").text = f"https://{self.s3_bucket}.s3.amazonaws.com/{self.feed_key}"
                 SubElement(channel, "language").text = "en-us"
-                SubElement(channel, "itunes:author").text = "Daily AI, by AI"
+                SubElement(channel, "itunes:author").text = self.podcast_title
                 SubElement(channel, "description").text = (
                     "Your daily AI newsletter summary in podcast format. "
                     "Comprehensive analysis of the latest developments in artificial intelligence, "
@@ -1541,9 +1545,9 @@ Content: {email['content']}
             
             # Create new episode item
             item = SubElement(channel, "item")
-            
+
             # Episode title with date
-            episode_title = f"Daily AI Summary - {episode_date.strftime('%B %d, %Y')}"
+            episode_title = f"{self.podcast_title_short} Summary - {episode_date.strftime('%B %d, %Y')}"
             SubElement(item, "title").text = episode_title
             
             # Episode description
@@ -1557,7 +1561,8 @@ Content: {email['content']}
                       type="audio/mpeg")
             
             # Unique episode GUID
-            episode_guid = f"daily-ai-{episode_date.strftime('%Y%m%d')}"
+            guid_prefix = 'staging-daily-ai' if self.environment == 'staging' else 'daily-ai'
+            episode_guid = f"{guid_prefix}-{episode_date.strftime('%Y%m%d')}"
             SubElement(item, "guid").text = episode_guid
             
             # Publication date in RFC 2822 format
@@ -1615,43 +1620,53 @@ Content: {email['content']}
             status = result_data['status']
             total_emails = result_data.get('total_emails', 0)
             strategy = result_data.get('processing_strategy', 'Unknown')
-            
-            subject = f"[AI Newsletter Summary] {status} - {total_emails} emails ({strategy})"
-            
+
+            subject = f"{self.notification_prefix}[AI Newsletter Summary] {status} - {total_emails} emails ({strategy})"
+            logger.info(f"Constructed email subject: {subject}")
+            logger.info(f"Notification prefix: '{self.notification_prefix}' | Environment: {self.environment}")
+
             if result_data['status'] == '✅ Success':
                 message_body = self._create_success_email(result_data)
-            else:
+            elif result_data['status'] == '📭 No emails found':
+                message_body = self._create_no_emails_notification(result_data)
+            elif result_data['status'] == '❌ Failure':
                 message_body = self._create_error_email(result_data)
-            
-            self.sns_client.publish(
+            else:
+                # Fallback for any unexpected status
+                message_body = self._create_error_email(result_data)
+
+            logger.info(f"About to publish SNS notification - Topic: {self.sns_topic_arn}")
+            logger.info(f"SNS Subject parameter: '{subject}'")
+            logger.info(f"Subject length: {len(subject)} characters")
+
+            response = self.sns_client.publish(
                 TopicArn=self.sns_topic_arn,
                 Subject=subject,
                 Message=message_body
             )
-            
+
+            logger.info(f"SNS MessageId: {response.get('MessageId', 'N/A')}")
             logger.info("Summary email sent successfully")
-            
+
         except Exception as e:
             logger.error(f"Error sending summary email: {str(e)}")
             raise
     
     def _create_success_email(self, result_data: Dict[str, Any]) -> str:
-        """Create success email message with both executive and podcast formats"""
-        summary = result_data.get('summary', 'No summary available')
-        insights = result_data.get('key_insights', [])
-        top_links = result_data.get('top_links', [])
+        """Create success email message with podcast format only"""
         podcast_content = result_data.get('podcast_content', '')
         podcast_headlines = result_data.get('podcast_headlines', [])
         podcast_deep_dive = result_data.get('podcast_deep_dive', '')
         audio_generated = result_data.get('audio_generated', False)
         audio_url = result_data.get('audio_url', '')
         audio_size = result_data.get('audio_size', 0)
-        
-        message = f"""🤖 AI Newsletter Summary - {datetime.now().strftime('%B %d, %Y')}
+
+        env_badge = "🧪 [STAGING TEST] " if self.environment == 'staging' else ""
+        message = f"""{env_badge}🎙️ AI Podcast Summary - {datetime.now().strftime('%B %d, %Y')}
 
 📊 Processed: {result_data['total_emails']} newsletters
 🔧 Strategy: {result_data.get('processing_strategy', 'Unknown')}"""
-        
+
         # Add audio information if available
         if audio_generated and audio_url:
             audio_size_mb = round(audio_size / (1024 * 1024), 1) if audio_size > 0 else 0
@@ -1659,53 +1674,33 @@ Content: {email['content']}
 🎧 Podcast Generated: {audio_size_mb}MB MP3
 🔗 Audio Link: {audio_url}
 """
-        
-        message += f"""
 
-═══════════════════════════════════════
-📋 EXECUTIVE REPORT FORMAT
-═══════════════════════════════════════
-
-{summary}
-
-"""
-        
-        if insights:
-            message += "\n💡 KEY INSIGHTS:\n"
-            for i, insight in enumerate(insights[:3], 1):
-                message += f"{i}. {insight}\n"
-        
-        if top_links:
-            message += "\n🔗 MUST-READ LINKS:\n"
-            for i, link in enumerate(top_links[:5], 1):
-                message += f"{i}. {link}\n"
-        
         # Add podcast format section
         message += f"""
 
 ═══════════════════════════════════════
-🎙️ PODCAST SCRIPT FORMAT
+🎙️ PODCAST SCRIPT
 ═══════════════════════════════════════
 
 """
-        
+
         if podcast_headlines:
             message += "📰 TOP NEWS HEADLINES:\n"
             for i, headline in enumerate(podcast_headlines, 1):
                 message += f"{i}. {headline}\n"
             message += "\n"
-        
+
         if podcast_deep_dive:
             message += "🔍 DEEP DIVE ANALYSIS:\n"
             message += f"{podcast_deep_dive}\n\n"
         elif podcast_content:
             message += f"{podcast_content}\n\n"
-        
+
         message += f"""═══════════════════════════════════════
 ⏰ Generated: {result_data['processed_at']}
 🚀 Ready for your day ahead!
 """
-        
+
         return message
     
     def _create_error_email(self, result_data: Dict[str, Any]) -> str:
@@ -1729,6 +1724,38 @@ This might be due to:
 
 The system will retry on the next scheduled run.
 """
+
+    def _create_no_emails_notification(self, result_data: Dict[str, Any]) -> str:
+        """Create informational email for when no emails are found"""
+        processed_at = result_data['processed_at']
+        env_badge = "🧪 [STAGING TEST] " if self.environment == 'staging' else ""
+
+        return f"""{env_badge}📭 No AI Newsletters Found
+
+✅ System Status: Healthy
+⏰ Checked at: {processed_at}
+
+The AI newsletter processing system checked the queue and found no new emails to process.
+
+This is normal and means:
+- ✓ The system is running correctly
+- ✓ No new newsletters have arrived since the last check
+- ✓ All previous emails have been processed
+
+Next scheduled check: {self._get_next_run_time() if self.environment == 'production' else 'Manual invocation only (staging)'}
+
+No action required.
+"""
+
+    def _get_next_run_time(self) -> str:
+        """Calculate next scheduled run time"""
+        from datetime import datetime, timedelta
+        # Scheduled daily at 10:00 UTC
+        now = datetime.utcnow()
+        next_run = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        if now.hour >= 10:
+            next_run += timedelta(days=1)
+        return next_run.strftime('%Y-%m-%d %H:%M UTC')
 
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
