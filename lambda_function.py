@@ -1089,7 +1089,8 @@ Content: {email['content']}
             batch_summaries=batch_summaries_content
         )
 
-    def _call_claude_api(self, prompt: str, retry_count: int = 0) -> str:
+    def _call_claude_api(self, prompt: str, retry_count: int = 0, max_tokens: int = 4000,
+                        temperature: float = 1.0, model: str = None) -> str:
         """Call Claude API with exponential backoff retry logic"""
         try:
             # Enforce rate limiting before each request
@@ -1099,10 +1100,11 @@ Content: {email['content']}
                 'x-api-key': self.claude_api_key,
                 'anthropic-version': '2023-06-01'
             }
-            
+
             data = {
-                'model': self.claude_model,
-                'max_tokens': 4000,
+                'model': model if model else self.claude_model,
+                'max_tokens': max_tokens,
+                'temperature': temperature,
                 'messages': [
                     {
                         'role': 'user',
@@ -1124,7 +1126,7 @@ Content: {email['content']}
                     delay = self.claude_base_delay * (2 ** retry_count)
                     logger.warning(f"Rate limited (429). Retrying in {delay}s (attempt {retry_count + 1}/{self.claude_max_retries})")
                     time.sleep(delay)
-                    return self._call_claude_api(prompt, retry_count + 1)
+                    return self._call_claude_api(prompt, retry_count + 1, max_tokens, temperature, model)
                 else:
                     raise Exception(f"Max retries ({self.claude_max_retries}) exceeded for rate limiting")
             
