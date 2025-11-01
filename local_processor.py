@@ -194,7 +194,7 @@ class LocalNewsletterProcessor(ClaudeNewsletterProcessor):
             
             # Channel metadata
             SubElement(channel, "title").text = "Daily AI, by AI (Local Development)"
-            SubElement(channel, "link").text = "http://localhost:8000/feed.xml"
+            SubElement(channel, "link").text = "https://dailyaibyai.news"
             SubElement(channel, "language").text = "en-us"
             SubElement(channel, "itunes:author").text = "AI Newsletter Processor (Local)"
             SubElement(channel, "description").text = (
