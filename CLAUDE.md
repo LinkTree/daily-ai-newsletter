@@ -193,19 +193,21 @@ RSS feed creation can be disabled with `{"create_rss": false}` in event JSON.
    - Kill all background processes before proceeding
    - Verify they are actually stopped
 
-4. **Invoke Lambda asynchronously:**
+4. **Invoke Lambda with extended timeout:**
    ```bash
-   aws lambda invoke --function-name FUNCTION_NAME --region REGION /tmp/response.json 2>&1 &
+   AWS_CLI_READ_TIMEOUT=900 aws lambda invoke --function-name FUNCTION_NAME --region REGION --cli-binary-format raw-in-base64-out --payload '{"test": true, "create_rss": false}' /tmp/response.json
    ```
-   - Don't wait for AWS CLI response (it will timeout after 3 minutes)
-   - Lambda continues running in background
+   - Set AWS_CLI_READ_TIMEOUT=900 (15 minutes) to avoid premature timeout
+   - Use --cli-binary-format raw-in-base64-out for JSON payload
+   - CLI will wait up to 15 minutes for Lambda to complete
+   - If Lambda takes longer, it will still complete (just CLI times out)
 
-5. **Wait 3-4 minutes** before checking status:
-   - Lambda functions take time to process newsletters (typically 2-5 minutes)
-   - Don't check logs immediately - give it time to run
-   - Set a timer or use `sleep 240` before checking
+5. **Verify completion:**
+   - With 15-minute timeout, the invoke command will wait for Lambda to complete
+   - If command returns successfully, Lambda completed
+   - If command times out, check CloudWatch logs to verify status
 
-6. **Verify completion via CloudWatch logs:**
+6. **Check CloudWatch logs for details:**
    ```bash
    aws logs tail /aws/lambda/FUNCTION_NAME --region REGION --since 5m --format short | grep -E "Processing completed|Generated episode title|Successfully saved" | tail -20
    ```
