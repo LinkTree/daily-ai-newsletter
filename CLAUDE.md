@@ -195,12 +195,19 @@ RSS feed creation can be disabled with `{"create_rss": false}` in event JSON.
 
 4. **Invoke Lambda with extended timeout:**
    ```bash
-   AWS_CLI_READ_TIMEOUT=900 aws lambda invoke --function-name FUNCTION_NAME --region REGION --cli-binary-format raw-in-base64-out --payload '{"test": true, "create_rss": false}' /tmp/response.json
+   aws lambda invoke \
+     --function-name FUNCTION_NAME \
+     --region REGION \
+     --cli-read-timeout 900 \
+     --cli-binary-format raw-in-base64-out \
+     --payload '{"test": true, "create_rss": false}' \
+     /tmp/response.json
    ```
-   - Set AWS_CLI_READ_TIMEOUT=900 (15 minutes) to avoid premature timeout
+   - Use --cli-read-timeout 900 (15 minutes = 900 seconds) to prevent premature timeout and retries
+   - Default CLI read timeout is 60 seconds, causing 2 automatic retries (3 total invocations)
+   - --cli-read-timeout 0 disables timeout completely (use with caution)
    - Use --cli-binary-format raw-in-base64-out for JSON payload
-   - CLI will wait up to 15 minutes for Lambda to complete
-   - If Lambda takes longer, it will still complete (just CLI times out)
+   - CLI will wait up to 15 minutes for Lambda to complete without retrying
 
 5. **Verify completion:**
    - With 15-minute timeout, the invoke command will wait for Lambda to complete
