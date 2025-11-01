@@ -11,15 +11,20 @@
 # Usage:
 #   ./update-lambda.sh
 #   ./update-lambda.sh --region eu-central-1
+#   ./update-lambda.sh --staging
 #
 # Options:
 #   --region REGION        AWS region (default: eu-central-1)
 #   --skip-build           Skip building package (use existing)
+#   --staging              Update staging environment instead of production
 #   --help                 Show this help message
 #
 # Examples:
-#   # Update Lambda function in eu-central-1
+#   # Update production Lambda function in eu-central-1
 #   ./update-lambda.sh
+#
+#   # Update staging Lambda function
+#   ./update-lambda.sh --staging
 #
 #   # Update in different region
 #   ./update-lambda.sh --region us-east-1
@@ -42,6 +47,7 @@ NC='\033[0m' # No Color
 # Default values
 AWS_REGION="eu-central-1"
 SKIP_BUILD=false
+STAGING=false
 LAMBDA_NAME="ai-newsletter-podcast-creator"
 
 # Deployment tracking
@@ -87,6 +93,11 @@ while [[ $# -gt 0 ]]; do
             SKIP_BUILD=true
             shift
             ;;
+        --staging)
+            STAGING=true
+            LAMBDA_NAME="ai-newsletter-podcast-creator-staging"
+            shift
+            ;;
         --help)
             show_help
             ;;
@@ -102,6 +113,13 @@ done
 
 preflight_checks() {
     log "Running pre-flight checks..."
+
+    # Log environment
+    if [ "$STAGING" = true ]; then
+        warn "Deploying to STAGING environment"
+    else
+        log "Deploying to PRODUCTION environment"
+    fi
 
     # Check AWS CLI
     if ! command -v aws &> /dev/null; then
@@ -252,20 +270,36 @@ update_lambda_function() {
 ################################################################################
 
 display_summary() {
+    local ENV_NAME="PRODUCTION"
+    if [ "$STAGING" = true ]; then
+        ENV_NAME="STAGING"
+    fi
+
     echo ""
     echo "=========================================================================="
     echo "                    LAMBDA UPDATE SUMMARY"
     echo "=========================================================================="
     echo ""
+    echo "Environment:         $ENV_NAME"
     echo "Region:              $AWS_REGION"
     echo "Account ID:          $ACCOUNT_ID"
     echo ""
     echo "Lambda Function:     $LAMBDA_NAME (UPDATED)"
     echo ""
     echo "Next Steps:"
-    echo "  1. Test the updated function manually if needed"
-    echo "  2. Monitor CloudWatch logs for any errors"
-    echo "  3. Scheduled trigger will use new code automatically"
+    if [ "$STAGING" = true ]; then
+        echo "  1. Test staging function: aws lambda invoke \\"
+        echo "       --function-name $LAMBDA_NAME \\"
+        echo "       --region $AWS_REGION response.json"
+        echo "  2. Monitor CloudWatch logs for any errors"
+        echo "  3. Check staging outputs:"
+        echo "       S3: aws s3 ls s3://ai-newsletter-podcasts-${ACCOUNT_ID}/staging/podcasts/"
+        echo "       RSS: aws s3 cp s3://ai-newsletter-podcasts-${ACCOUNT_ID}/feed-staging.xml -"
+    else
+        echo "  1. Test the updated function manually if needed"
+        echo "  2. Monitor CloudWatch logs for any errors"
+        echo "  3. Scheduled trigger will use new code automatically"
+    fi
     echo ""
     echo "Update log saved to: $UPDATE_LOG"
     echo "=========================================================================="
