@@ -7,8 +7,9 @@ AWS Lambda-based system that automatically processes AI newsletters into dual-fo
 ## Features
 
 - **Dual-Format Generation**: Produces both executive reports and podcast scripts from the same content
+- **AI-Generated Episode Titles**: Uses Claude Haiku 4.5 to create engaging, newsworthy podcast titles
 - **Automated Audio Generation**: Uses AWS Polly to create podcast audio with professional intro/outro
-- **RSS Feed Management**: Maintains podcast RSS feed for distribution
+- **RSS Feed Management**: Maintains podcast RSS feed for distribution with AI-generated titles
 - **Smart Content Processing**: Hybrid batch processing for large newsletter volumes
 - **Rate Limiting & Retry Logic**: Robust Claude API integration with exponential backoff
 - **Local Development Mode**: Test without AWS infrastructure
@@ -82,6 +83,112 @@ After initial deployment, use the quick update script:
 
 **This is what you'll use 95% of the time** - it only updates Lambda code, skipping infrastructure checks (completes in ~2 minutes).
 
+## Staging Environment
+
+Test new features safely without affecting production using a complete staging environment.
+
+### Key Features
+
+- **Non-Destructive Testing**: Reads from production SQS queue without deleting messages
+- **Isolated Outputs**: Separate S3 folder (`staging/`), RSS feed, and DynamoDB table
+- **Manual Invocation Only**: No EventBridge schedule (test when you want)
+- **Clear Identification**: All outputs marked with `[STAGING]` prefix
+- **Same Infrastructure**: Uses production queue, SNS, and S3 bucket (cost-efficient)
+
+### Deploying Staging Environment
+
+**Prerequisites**: Production infrastructure must exist first (run `./deploy.sh --full` first)
+
+```bash
+# Deploy complete staging environment
+./deploy-staging.sh
+
+# Deploy to different region
+./deploy-staging.sh --region us-east-1
+
+# Preview what will be created
+./deploy-staging.sh --dry-run
+```
+
+**Creates**:
+- DynamoDB table: `ai_daily_news_staging`
+- Lambda function: `ai-newsletter-podcast-creator-staging`
+- S3 structure: `s3://[bucket]/staging/podcasts/`
+- RSS feed: `s3://[bucket]/feed-staging.xml`
+
+### Testing Staging
+
+```bash
+# Invoke staging function manually
+aws lambda invoke \
+  --function-name ai-newsletter-podcast-creator-staging \
+  --region eu-central-1 \
+  response.json
+
+# Check staging outputs
+aws s3 ls s3://ai-newsletter-podcasts-[ACCOUNT_ID]/staging/podcasts/
+aws s3 cp s3://ai-newsletter-podcasts-[ACCOUNT_ID]/feed-staging.xml -
+aws dynamodb scan --table-name ai_daily_news_staging --limit 5
+```
+
+### Updating Staging Code
+
+After making changes, update staging Lambda:
+
+```bash
+# Update staging environment
+./update-lambda.sh --staging
+
+# Update staging in different region
+./update-lambda.sh --staging --region us-east-1
+```
+
+### Staging vs Production
+
+| Aspect | Production | Staging |
+|--------|-----------|---------|
+| Lambda Function | `ai-newsletter-podcast-creator` | `ai-newsletter-podcast-creator-staging` |
+| DynamoDB Table | `ai_daily_news` | `ai_daily_news_staging` |
+| S3 Prefix | `podcasts/` | `staging/podcasts/` |
+| RSS Feed | `feed.xml` | `feed-staging.xml` |
+| SQS Messages | Deleted after processing | **Not deleted** (test mode) |
+| EventBridge | Daily at 10:00 UTC | No schedule (manual only) |
+| SNS Notifications | Normal | `[STAGING]` prefix |
+| RSS GUIDs | `daily-ai-YYYYMMDD` | `staging-daily-ai-YYYYMMDD` |
+| Podcast Title | "Daily AI, by AI" | "Daily AI, by AI (Staging)" |
+| Audio Intro | Normal | "This is a staging test..." |
+
+### Environment Variables (Staging)
+
+Staging-specific environment variables set automatically by `deploy-staging.sh`:
+
+```bash
+ENVIRONMENT=staging
+TEST_MODE=true                  # Prevents SQS message deletion
+S3_KEY_PREFIX=staging/
+RSS_FEED_NAME=feed-staging.xml
+NOTIFICATION_PREFIX=[STAGING]
+PODCAST_TITLE=Daily AI, by AI (Staging)
+PODCAST_TITLE_SHORT=Daily AI Staging
+DYNAMODB_TABLE_NAME=ai_daily_news_staging
+```
+
+### Testing Workflow
+
+1. **Make Changes**: Edit `lambda_function.py` with new features
+2. **Update Staging**: `./update-lambda.sh --staging`
+3. **Test**: `aws lambda invoke --function-name ai-newsletter-podcast-creator-staging ...`
+4. **Verify Outputs**: Check S3 staging folder and RSS feed
+5. **Review**: Confirm functionality is correct
+6. **Deploy Production**: `./update-lambda.sh`
+
+### Important Notes
+
+- **Non-Destructive**: Staging reads from production queue but doesn't delete messages, so production can still process them
+- **Cost-Efficient**: Uses same S3 bucket, SQS queue, and SNS topic (minimal additional cost)
+- **Data Isolation**: Separate DynamoDB table ensures no production data contamination
+- **Manual Testing**: No automatic triggers - invoke when you want to test
+
 ## Local Development
 
 Test the system locally without deploying to AWS:
@@ -137,9 +244,17 @@ See [local_setup.md](local_setup.md) for detailed local development guide.
   - Default region: `eu-central-1`
   - Time: ~15-20 minutes
 
+- **`deploy-staging.sh`** - Staging environment deployment
+  - Creates complete staging infrastructure
+  - Requires production infrastructure first
+  - Separate DynamoDB table, Lambda function, S3 structure
+  - Non-destructive testing (reads but doesn't delete SQS messages)
+  - Time: ~5-10 minutes
+
 - **`update-lambda.sh`** - Lambda-only updates
   - Quick updates to Lambda function code
   - Skips infrastructure checks
+  - Supports both production and staging (`--staging` flag)
   - Time: ~2 minutes
   - **Use this for regular deployments**
 

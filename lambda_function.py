@@ -248,22 +248,28 @@ Take the single most important news item and provide comprehensive analysis cove
 Write as engaging podcast content for technology executives. Do NOT include any closing remarks or sign-offs.
 """
 
-    def save_podcast_to_dynamodb(self, text: str) -> bool:
-        """Save podcast text to DynamoDB with current date"""
+    def save_podcast_to_dynamodb(self, text: str, episode_title: str = None) -> bool:
+        """Save podcast text and episode title to DynamoDB with current date"""
         try:
             table = self.dynamodb.Table(self.dynamodb_table_name)
             current_date = datetime.now().strftime('%Y-%m-%d')
-            
+
+            # Use generated title or fallback to date-based title
+            if not episode_title:
+                episode_title = f"{self.podcast_title_short} Summary - {current_date}"
+
             table.put_item(
                 Item={
                     'date': current_date,
-                    'text': text
+                    'text': text,
+                    'episode_title': episode_title,
+                    'generated_at': datetime.now().isoformat()
                 }
             )
-            
-            logger.info(f"Successfully saved podcast text to DynamoDB table: {self.dynamodb_table_name}")
+
+            logger.info(f"Successfully saved podcast text and title to DynamoDB table: {self.dynamodb_table_name}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error saving to DynamoDB: {str(e)}")
             return False
@@ -304,13 +310,19 @@ Write as engaging podcast content for technology executives. Do NOT include any 
             
             # Apply hybrid processing strategy
             summary = self._hybrid_processing(enhanced_emails)
-            
+
+            # Generate episode title from podcast content
+            episode_title = None
+            if summary.get('podcast_content'):
+                episode_title = self._generate_episode_title(summary['podcast_content'])
+
             # Generate podcast audio if enabled
             audio_info = None
             if summary.get('podcast_content'):
                 audio_info = self._generate_podcast_audio(
-                    summary['podcast_content'], 
-                    datetime.now().isoformat()
+                    summary['podcast_content'],
+                    datetime.now().isoformat(),
+                    episode_title
                 )
             
             # Clean up processed messages (only in production mode)
@@ -326,6 +338,7 @@ Write as engaging podcast content for technology executives. Do NOT include any 
                 'podcast_content': summary.get('podcast_content', ''),
                 'podcast_headlines': summary.get('podcast_headlines', []),
                 'podcast_deep_dive': summary.get('podcast_deep_dive', ''),
+                'episode_title': episode_title,
                 'processed_at': datetime.now().isoformat()
             }
             
@@ -1238,7 +1251,7 @@ Content: {email['content']}
                 'headlines': headlines,
                 'deep_dive': '\n'.join(deep_dive_content) if deep_dive_content else response
             }
-            
+
         except Exception as e:
             logger.warning(f"Error parsing podcast response: {str(e)}")
             return {
@@ -1246,7 +1259,77 @@ Content: {email['content']}
                 'headlines': [],
                 'deep_dive': response
             }
-    
+
+    def _generate_episode_title(self, podcast_script: str) -> str:
+        """Generate a compelling episode title using Claude Haiku"""
+        try:
+            logger.info("Generating episode title with Claude Haiku...")
+
+            # Construct prompt for title generation
+            prompt = f"""You are an expert podcast editor creating compelling episode titles for "Daily AI, by AI" - a daily podcast covering the latest developments in artificial intelligence.
+
+Your task: Create ONE compelling episode title based on the podcast script below.
+
+Requirements:
+- 6-12 words maximum
+- Newsworthy and informative (clearly states what happened)
+- Catchy and engaging (makes people want to listen)
+- Focus on the most important or surprising development
+- Professional but accessible tone
+- Do NOT use clickbait or sensationalism
+- Do NOT use questions or "How to..." format
+
+Good examples:
+- "OpenAI Launches GPT-5 with Revolutionary Reasoning"
+- "EU Parliament Passes Landmark AI Regulations"
+- "Google's Gemini 2.0 Defeats GPT-4 in Coding Tests"
+- "Microsoft Acquires Major AI Startup for $10 Billion"
+- "AI Models Show Unexpected Self-Improvement Capabilities"
+
+Bad examples:
+- "You Won't Believe What AI Did Today!" (clickbait)
+- "How AI is Changing Everything" (too vague)
+- "Today's AI News" (not specific)
+- "The Future of Artificial Intelligence is Here" (generic)
+
+Return ONLY the title - no quotes, no explanation, no punctuation at the end.
+
+---
+
+PODCAST SCRIPT:
+{podcast_script}
+
+---
+
+EPISODE TITLE:"""
+
+            # Call Claude Haiku 4.5 with specific parameters
+            response = self._call_claude_api(
+                prompt=prompt,
+                max_tokens=50,
+                temperature=0.7,
+                model="claude-haiku-4-5"
+            )
+
+            # Clean up response (remove quotes, extra whitespace, trailing punctuation)
+            title = response.strip().strip('"').strip("'").strip()
+
+            # Validate title length
+            word_count = len(title.split())
+            if word_count < 3 or word_count > 15:
+                logger.warning(f"Generated title has {word_count} words, outside recommended range")
+
+            logger.info(f"Generated episode title: {title}")
+            return title
+
+        except Exception as e:
+            logger.error(f"Error generating episode title: {str(e)}")
+            # Fallback to date-based title
+            current_date = datetime.now().strftime('%B %d, %Y')
+            fallback_title = f"{self.podcast_title_short} Summary - {current_date}"
+            logger.info(f"Using fallback title: {fallback_title}")
+            return fallback_title
+
     def _chunk_text_for_polly(self, text: str, max_length: int = 2800) -> List[str]:
         """Chunk text for Polly synthesis (based on reference.py)"""
         import re
@@ -1347,7 +1430,7 @@ Content: {email['content']}
             logger.error(f"Error uploading audio to S3: {str(e)}")
             raise
     
-    def _generate_podcast_audio(self, podcast_content: str, processed_date: str) -> Optional[Dict[str, str]]:
+    def _generate_podcast_audio(self, podcast_content: str, processed_date: str, episode_title: str = None) -> Optional[Dict[str, str]]:
         """Generate MP3 audio from podcast content"""
         if not self.generate_audio:
             logger.info("Audio generation disabled")
@@ -1364,8 +1447,8 @@ Content: {email['content']}
                 logger.warning("No content available for audio generation")
                 return None
             
-            # Save cleaned podcast text to DynamoDB
-            self.save_podcast_to_dynamodb(clean_text)
+            # Save cleaned podcast text and title to DynamoDB
+            self.save_podcast_to_dynamodb(clean_text, episode_title)
             
             # Convert to speech
             audio_data = self._convert_text_to_speech(clean_text)
@@ -1382,7 +1465,7 @@ Content: {email['content']}
             if self.create_rss:
                 episode_date = datetime.fromisoformat(processed_date.replace('Z', '+00:00'))
                 episode_description = self._create_episode_description(podcast_content)
-                self._update_rss_feed(audio_key, len(audio_data), episode_description, episode_date)
+                self._update_rss_feed(audio_key, len(audio_data), episode_description, episode_date, episode_title)
                 logger.info("RSS feed updated with new episode")
             else:
                 logger.info("RSS feed update skipped (create_rss=false)")
@@ -1513,7 +1596,7 @@ Content: {email['content']}
             logger.warning(f"Error creating episode description: {str(e)}")
             return f"{self.podcast_title} newsletter summary with the latest developments in artificial intelligence."
     
-    def _update_rss_feed(self, audio_key: str, audio_size: int, episode_description: str, episode_date: datetime) -> None:
+    def _update_rss_feed(self, audio_key: str, audio_size: int, episode_description: str, episode_date: datetime, episode_title: str = None) -> None:
         """Update RSS feed with new podcast episode (based on reference.py)"""
         try:
             # Try to get existing feed
@@ -1546,8 +1629,9 @@ Content: {email['content']}
             # Create new episode item
             item = SubElement(channel, "item")
 
-            # Episode title with date
-            episode_title = f"{self.podcast_title_short} Summary - {episode_date.strftime('%B %d, %Y')}"
+            # Episode title - use generated title or fallback to date-based
+            if not episode_title:
+                episode_title = f"{self.podcast_title_short} Summary - {episode_date.strftime('%B %d, %Y')}"
             SubElement(item, "title").text = episode_title
             
             # Episode description
@@ -1657,6 +1741,7 @@ Content: {email['content']}
         podcast_content = result_data.get('podcast_content', '')
         podcast_headlines = result_data.get('podcast_headlines', [])
         podcast_deep_dive = result_data.get('podcast_deep_dive', '')
+        episode_title = result_data.get('episode_title', '')
         audio_generated = result_data.get('audio_generated', False)
         audio_url = result_data.get('audio_url', '')
         audio_size = result_data.get('audio_size', 0)
@@ -1666,6 +1751,11 @@ Content: {email['content']}
 
 📊 Processed: {result_data['total_emails']} newsletters
 🔧 Strategy: {result_data.get('processing_strategy', 'Unknown')}"""
+
+        # Add episode title if available
+        if episode_title:
+            message += f"""
+🎯 Episode Title: {episode_title}"""
 
         # Add audio information if available
         if audio_generated and audio_url:

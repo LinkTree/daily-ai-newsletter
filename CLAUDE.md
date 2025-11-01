@@ -49,6 +49,52 @@ Every processing run generates TWO parallel outputs:
 
 Both formats use separate prompts (lambda_function.py:96-236) but process the same source content.
 
+### Episode Title Generation
+
+Podcast episodes get AI-generated titles using Claude Haiku 4.5 for engagement and discoverability.
+
+**How it works:**
+1. After podcast script generation, full script is sent to Claude Haiku 4.5
+2. Haiku analyzes the script and generates a newsworthy, catchy title (6-12 words)
+3. Title is saved to DynamoDB, used in RSS feed, and included in email notifications
+4. Fallback: Date-based title if generation fails (e.g., "Daily AI Summary - October 31, 2025")
+
+**Model & Cost:**
+- Model: `claude-haiku-4-5` (Claude Haiku 4.5)
+- Cost: ~$1 per million input tokens, ~$5 per million output tokens
+- Typical cost per episode: ~$0.0008 (negligible)
+- Time added: ~2-3 seconds per episode
+
+**Title Quality Guidelines:**
+- Newsworthy and informative (states what happened)
+- Catchy and engaging (makes people want to listen)
+- Professional but accessible tone
+- No clickbait or sensationalism
+- 6-12 words maximum
+
+**Implementation:** See `_generate_episode_title` method (lambda_function.py:~1250)
+
+**Backfilling Historical Episodes:**
+Use `backfill_episode_titles.py` script to generate titles for existing episodes:
+
+```bash
+# Test with 5 records (dry-run)
+python backfill_episode_titles.py --dry-run --limit 5
+
+# Run on staging table
+python backfill_episode_titles.py --table-name ai_daily_news_staging
+
+# Run on production table
+python backfill_episode_titles.py --table-name ai_daily_news
+```
+
+The script:
+- Scans DynamoDB for records missing `episode_title`
+- Generates titles using Claude Haiku 4.5
+- Updates records with new titles + `generated_at` timestamp
+- Rate limits to 1 request per 2 seconds
+- Provides progress logging and summary report
+
 ### Audio Generation Pipeline
 
 1. **Text Preparation** (_prepare_text_for_speech, lambda_function.py:1388-1465):
@@ -66,7 +112,7 @@ Both formats use separate prompts (lambda_function.py:96-236) but process the sa
 3. **Distribution** (_upload_audio_to_s3, lambda_function.py:1310-1340):
    - Uploads MP3 to S3 with metadata
    - Generates presigned URL (7-day expiry)
-   - Updates RSS feed with new episode
+   - Updates RSS feed with new episode (using AI-generated title)
 
 ### Rate Limiting & Retry Logic
 
@@ -203,8 +249,27 @@ All prompts centralized in _init_prompts (lambda_function.py:96-236) with separa
 - Executive comprehensive/batch/meta-summary
 - Podcast comprehensive/batch/meta-summary
 
+### DynamoDB Schema
+
+Daily summaries are stored in DynamoDB with the following schema:
+
+```python
+{
+    'date': '2025-10-31',              # Partition key (YYYY-MM-DD)
+    'text': '<podcast_script>',         # Full podcast script text
+    'episode_title': 'AI-Generated Title',  # AI-generated episode title (NEW)
+    'generated_at': '2025-10-31T14:30:00Z'  # ISO timestamp of generation (NEW)
+}
+```
+
+**New fields (added with episode title generation):**
+- `episode_title`: AI-generated title from Claude Haiku 4.5, or fallback date-based title
+- `generated_at`: ISO 8601 timestamp of when the record was created
+
+**Backfilling:** Use `backfill_episode_titles.py` to add titles to existing records missing this field.
+
 ### RSS Feed Management
-RSS feed is updated with each podcast episode. Episodes include episode title, description, audio URL, publication date, and duration (default: 10 minutes).
+RSS feed is updated with each podcast episode. Episodes include AI-generated episode title, description, audio URL, publication date, and duration (default: 10 minutes).
 
 ### Cleanup Behavior
 Messages only deleted from SQS when test_mode=False (lambda_function.py:304-307). This prevents data loss during development/debugging.
