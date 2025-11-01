@@ -87,3 +87,4 @@ ssml_fix.py
 deployment-package.zip
 deployment-*.log
 lambda-update-*.log
+*.json
