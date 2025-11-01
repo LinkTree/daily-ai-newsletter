@@ -179,25 +179,52 @@ RSS feed creation can be disabled with `{"create_rss": false}` in event JSON.
 
 ### Lambda Testing Protocol
 
-**CRITICAL: When user requests to run Lambda "once" or "one time only":**
+**CRITICAL: Long-running Lambda functions require careful async handling:**
 
 1. **Before invoking:** Check for any running executions
    ```bash
-   aws logs tail /aws/lambda/FUNCTION_NAME --region REGION --since 2m --format short | tail -10
+   aws logs tail /aws/lambda/FUNCTION_NAME --region REGION --since 5m --format short | grep -E "START RequestId|END RequestId|Processing completed" | tail -20
    ```
 
-2. **Verify no active invocations:** Look for recent "START RequestId" without corresponding "END RequestId"
+2. **Verify no active invocations:** Look for recent "START RequestId" without corresponding "END RequestId" or "Processing completed"
 
-3. **Run EXACTLY ONE invocation:** Use a single `aws lambda invoke` command
+3. **Kill any background bash processes** that might invoke Lambda:
+   - Check system reminders for running background processes
+   - Kill all background processes before proceeding
+   - Verify they are actually stopped
 
-4. **Wait for completion:** Monitor logs to confirm the single execution completes
+4. **Invoke Lambda asynchronously:**
+   ```bash
+   aws lambda invoke --function-name FUNCTION_NAME --region REGION /tmp/response.json 2>&1 &
+   ```
+   - Don't wait for AWS CLI response (it will timeout after 3 minutes)
+   - Lambda continues running in background
 
-5. **Never run multiple invocations** when user explicitly requests "once" - this wastes money, API credits, and violates user intent
+5. **Wait 3-4 minutes** before checking status:
+   - Lambda functions take time to process newsletters (typically 2-5 minutes)
+   - Don't check logs immediately - give it time to run
+   - Set a timer or use `sleep 240` before checking
+
+6. **Verify completion via CloudWatch logs:**
+   ```bash
+   aws logs tail /aws/lambda/FUNCTION_NAME --region REGION --since 5m --format short | grep -E "Processing completed|Generated episode title|Successfully saved" | tail -20
+   ```
+   - Look for "Processing completed: ✅ Success" message
+   - Check for "Generated episode title:" to verify episode title feature
+   - Verify "Successfully saved podcast text and title to DynamoDB"
+
+7. **Never re-invoke until verified complete:**
+   - Wait for "Processing completed" in logs before any new invocation
+   - Don't invoke multiple times for code changes - deploy once, test once
+   - Each invocation sends emails and costs money
 
 **Why this matters:**
-- Each Lambda invocation costs money (compute + API calls)
-- Claude API calls have rate limits and usage costs
+- Each Lambda invocation costs money (compute + API calls + Polly + Claude API)
+- Claude API calls cost ~$0.003-0.015 per newsletter
+- Episode title generation costs ~$0.0008 per episode (Claude Haiku 4.5)
 - TEST_MODE with SQS means messages are reprocessed repeatedly
+- Multiple invocations send duplicate email notifications
+- AWS CLI timeout ≠ Lambda function stopped (Lambda keeps running in background)
 - User trust depends on following explicit instructions precisely
 
 ## Environment Variables
