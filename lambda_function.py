@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import os
 import time
 import logging
+import tempfile
 from urllib.parse import urljoin, urlparse
 from xml.etree.ElementTree import fromstring, Element, SubElement, tostring, register_namespace
 from xml.dom import minidom
@@ -27,6 +28,13 @@ try:
 except ImportError:
     TOKEN_COUNTING_AVAILABLE = False
     logging.warning("Token counting not available, using character estimation")
+
+try:
+    from mutagen.mp3 import MP3
+    MUTAGEN_AVAILABLE = True
+except ImportError:
+    MUTAGEN_AVAILABLE = False
+    logging.warning("Mutagen not available, using default duration for podcasts")
 
 # Configure logging
 logger = logging.getLogger()
@@ -1597,7 +1605,61 @@ EPISODE TITLE:"""
         except Exception as e:
             logger.warning(f"Error creating episode description: {str(e)}")
             return f"{self.podcast_title} newsletter summary with the latest developments in artificial intelligence."
-    
+
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration in seconds to HH:MM:SS or MM:SS format for iTunes."""
+        total_seconds = int(seconds)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes}:{secs:02d}"
+
+    def _get_audio_duration_from_s3(self, audio_key: str) -> str:
+        """Download MP3 from S3 and get its duration using mutagen.
+
+        Args:
+            audio_key: S3 key for the audio file
+
+        Returns:
+            Formatted duration string (MM:SS or HH:MM:SS), or "10:00" as fallback
+        """
+        if not MUTAGEN_AVAILABLE:
+            logger.warning("Mutagen not available, using default duration")
+            return "10:00"
+
+        tmp_path = None
+        try:
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+
+            # Download from S3
+            logger.info(f"Downloading audio from S3 to extract duration: {audio_key}")
+            self.s3_client.download_file(self.s3_bucket, audio_key, tmp_path)
+
+            # Get duration using mutagen
+            audio = MP3(tmp_path)
+            duration_seconds = audio.info.length
+            formatted_duration = self._format_duration(duration_seconds)
+
+            logger.info(f"Extracted audio duration: {formatted_duration}")
+            return formatted_duration
+
+        except Exception as e:
+            logger.warning(f"Could not extract audio duration from S3: {str(e)}, using default")
+            return "10:00"  # Fallback to default
+        finally:
+            # Clean up temporary file
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
     def _update_rss_feed(self, audio_key: str, audio_size: int, episode_description: str, episode_date: datetime, episode_title: str = None) -> None:
         """Update RSS feed with new podcast episode (based on reference.py)"""
         try:
@@ -1615,7 +1677,7 @@ EPISODE TITLE:"""
 
                 # Add channel metadata
                 SubElement(channel, "title").text = self.podcast_title
-                SubElement(channel, "link").text = f"https://{self.s3_bucket}.s3.amazonaws.com/{self.feed_key}"
+                SubElement(channel, "link").text = "https://dailyaibyai.news"
                 SubElement(channel, "language").text = "en-us"
                 SubElement(channel, "itunes:author").text = self.podcast_title
                 SubElement(channel, "description").text = (
@@ -1654,9 +1716,10 @@ EPISODE TITLE:"""
             # Publication date in RFC 2822 format
             pubdate = episode_date.strftime("%a, %d %b %Y %H:%M:%S +0000")
             SubElement(item, "pubDate").text = pubdate
-            
-            # Estimated duration (we could calculate this based on audio length, but using a default)
-            SubElement(item, "itunes:duration").text = "10:00"  # Default 10 minutes
+
+            # Calculate real duration from audio file on S3
+            duration = self._get_audio_duration_from_s3(audio_key)
+            SubElement(item, "itunes:duration").text = duration
             
             # Convert to pretty XML
             rss_bytes = tostring(rss, encoding="utf-8", xml_declaration=True)
